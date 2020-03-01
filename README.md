@@ -1,0 +1,1 @@
+This is a collection of small games I've implemented mostly in the context of coding challenges. The code might not be super clean
