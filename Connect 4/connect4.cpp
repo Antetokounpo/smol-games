@@ -1,8 +1,15 @@
 #include<vector>
 #include<iostream>
 #include<string>
+#include<cstring>
+#include<sys/socket.h>
+#include<sys/un.h>
+#include<sys/unistd.h>
+#include<poll.h>
 #include<SFML/Graphics.hpp>
 #include<SFML/Window.hpp>
+
+static const std::string turn_colors[2] = {"RED", "YELLOW"};
 
 class Board
 {
@@ -17,6 +24,123 @@ class Board
     private:
         std::vector<std::vector<int>> columns;
 };
+
+class Connect4Server
+{
+    public:
+        Connect4Server();
+        ~Connect4Server();
+
+        void start(Board& board);
+        bool play(Board& board);
+    private:
+        int fd, cl, rc;
+        struct pollfd fds;
+        const char* socket_path = "./connect4_server";
+        int timeoutval = 200;
+};
+
+Connect4Server::Connect4Server()
+{
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    fds.events = POLLIN;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path)-1);
+    unlink(socket_path);
+
+    if(bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1)
+    {
+        std::cout << "Bind error\n";
+    }
+}
+
+Connect4Server::~Connect4Server() {}
+
+void Connect4Server::start(Board& board)
+{
+    if(listen(fd, 5) == -1)
+    {
+        std::cout << "Listen error\n";
+        return;
+    }
+
+    cl = accept(fd, NULL, NULL);
+
+    if(cl == -1)
+    {
+        std::cout << "Accept error\n";
+        return;
+    }
+
+    // Set le fd pour le call de poll dans la fonction play
+    fds.fd = cl;
+}
+
+bool Connect4Server::play(Board& board)
+{
+    while(true)
+    {
+        char buf[4096];
+        memset(buf, 0, sizeof(buf));
+
+        // Timeout après n millisecondes
+        int rv = poll(&fds, 1, timeoutval);
+        if(rv == 0)
+        {
+            break;
+        }
+
+        rc = recv(cl, buf, sizeof(buf), 0);
+        if(rc == -1)
+        {
+            std::cout << "Receive error\n";
+            return false;
+        }
+
+        std::string str = buf;
+
+        if(str == "get")
+        {
+            std::string board_str = "";
+            for(auto col : board.getBoard())
+            {
+                for(auto& p : col)
+                {
+                    board_str += std::to_string(p);
+                }
+                board_str += '\n';
+            }
+            const char* board_cstr = board_str.c_str();
+            if(send(cl, board_cstr, strlen(board_cstr), 0) == -1)
+            {
+                std::cout << "Sending error\n";
+                return false;
+            }
+        }
+        else if (str == "exit")
+        {
+            const char* msg = "Cancelling...";
+            send(cl, msg, strlen(msg), 0);
+            break;
+        }
+        else
+        {
+            const char* err = "Wrong command";
+            if(send(cl, err, strlen(err), 0) == -1)
+            {
+                std::cout << "Sending error\n";
+                return false;
+            }
+        }
+    }
+
+    return false;
+}
+
 
 Board::Board() : columns(7, std::vector<int>(6, 2))
 {}
@@ -65,7 +189,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -85,7 +210,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -105,7 +231,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -125,7 +252,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -144,7 +272,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -163,7 +292,8 @@ int Board::checkWinner()
                 ++c;
                 if(c == 3)
                     return previous;
-            }else
+            }
+            else
             {
                 c = 0;
             }
@@ -174,25 +304,54 @@ int Board::checkWinner()
     return -1;
 }
 
-int main()
+sf::Text init_text()
 {
-    Board board;
-    std::vector<sf::Color> colors {sf::Color::Red, sf::Color::Yellow, sf::Color::White};
-    int turn = 0;
-
-    sf::Font font;
-    if(!font.loadFromFile("roboto.ttf"))
+    static sf::Font font;
+    if(!font.loadFromFile("fonts/roboto.ttf"))
     {
         std::cout << "Error" << std::endl;
     }
+
     sf::Text text;
     text.setFont(font);
     text.setCharacterSize(24);
     text.setFillColor(sf::Color::Black);
     text.setStyle(sf::Text::Regular);
 
-    sf::RenderWindow win(sf::VideoMode(700, 600), "Connect 4");
+    return text;
+}
+
+int main(int argc, char* argv[])
+{
+    bool computer = false;
+    if(argc > 1)
+    {
+        if(strcmp(argv[1], "comp") == 0)
+            computer = true;
+    }
+
+    Board board;
+    Connect4Server server;
+    std::vector<sf::Color> colors {sf::Color::Red, sf::Color::Yellow, sf::Color::White};
+    int turn = 0;
+    bool over = false;
+    sf::Text text = init_text();
+
+    if(computer)
+    {
+        std::cout << "Waiting for client to connect...\n"; 
+        server.start(board);
+        std::cout << "Client connected!\n";
+    }
+
+    sf::ContextSettings settings;
+    settings.antialiasingLevel = 8;
+
+    sf::RenderWindow win(sf::VideoMode(700, 600), "Connect 4", sf::Style::Default, settings);
     win.setKeyRepeatEnabled(false);
+
+
+
     while(win.isOpen())
     {
         sf::Event e;
@@ -201,7 +360,7 @@ int main()
             switch(e.type)
             {
                 case sf::Event::MouseButtonPressed:
-                    if(sf::Mouse::isButtonPressed(sf::Mouse::Left))
+                    if(sf::Mouse::isButtonPressed(sf::Mouse::Left) && !over)
                     {
                         sf::Vector2i position = sf::Mouse::getPosition(win);
                         if(board.drop(position.x/100, turn%2))
@@ -210,22 +369,25 @@ int main()
                         }
                     }
                     break;
-                
+
                 case sf::Event::Closed:
                     win.close();
                     break;
             }
         }
         win.clear(sf::Color::Blue);
-        
+
         //std::cout << turn%2 << std::endl;
 
-        text.setString("Turn "+std::to_string(turn%2+1));
+        if(!over)
+            text.setString("Turn "+turn_colors[turn%2]);
+        else
+            text.setString(turn_colors[board.checkWinner()]+" won in "+std::to_string(turn)+" turns");
 
         if(board.checkWinner() >= 0)
         {
             std::cout << "Winner: " + std::to_string(board.checkWinner()) << std::endl;
-            return -1;
+            over = true;
         }
 
         std::vector<std::vector<int>> game_board = board.getBoard();
@@ -243,6 +405,11 @@ int main()
         win.draw(text);
 
         win.display();
+        if(computer && turn % 2)
+        {
+            bool t = server.play(board);
+            if(t) turn++;
+        }
     }
     return 0;
 }
